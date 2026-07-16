@@ -25,15 +25,15 @@ UartToMcuNode::UartToMcuNode()
 	// /wheel_speeds 单位为 RPS(转/秒),乘以该系数换算成下位机期望的整数车速(编码器 cps 等)。
 	wheel_speed_scale_ = declare_parameter<double>("wheel_speed_scale", 15.0);
 
-	// 行进包:订阅左右轮速,持续下发(id=0x37)。
+	// 行进帧:订阅左右轮速,持续下发。
 	wheel_sub_ = create_subscription<std_msgs::msg::Float64MultiArray>(
 		wheel_speeds_topic_, 20,
 		std::bind(&UartToMcuNode::wheel_speeds_callback, this, std::placeholders::_1));
-	// 开始包:收到新目标发布事件时启动小车(id=0x34)。
+	// 新目标发布事件:精简协议后无独立开始包,仅记录日志。
 	goal_published_sub_ = create_subscription<std_msgs::msg::Bool>(
 		goal_published_topic_, 10,
 		std::bind(&UartToMcuNode::goal_published_callback, this, std::placeholders::_1));
-	// 结束包:到达目标或停车时下发停止(id=0x38)。
+	// 结束:到达目标或停车时下发 (0,0) 停车帧。
 	goal_reached_sub_ = create_subscription<std_msgs::msg::Bool>(
 		goal_reached_topic_, 10,
 		std::bind(&UartToMcuNode::goal_reached_callback, this, std::placeholders::_1));
@@ -124,8 +124,8 @@ void UartToMcuNode::wheel_speeds_callback(const std_msgs::msg::Float64MultiArray
 	const int32_t left = scale_to_i32(msg->data[0]);
 	const int32_t right = scale_to_i32(msg->data[1]);
 
-	// 行进包:下发左右轮车速。
-	if (!write_packet(build_packet(kMovePacketId, left, right))) {
+	// 行进帧:下发左右轮车速。
+	if (!write_packet(build_packet(left, right))) {
 		RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Failed writing move packet to serial");
 	}
 }
@@ -136,12 +136,8 @@ void UartToMcuNode::goal_published_callback(const std_msgs::msg::Bool::SharedPtr
 		return;
 	}
 
-	// 开始包:启动小车,左右轮速填 0。
-	if (!write_packet(build_packet(kStartPacketId, 0, 0))) {
-		RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Failed writing start packet to serial");
-		return;
-	}
-	RCLCPP_INFO(get_logger(), "Sent start packet (id=0x%02X)", kStartPacketId);
+	// 精简协议后无独立的开始包:下位机由后续行进帧直接驱动,这里仅记录事件。
+	RCLCPP_INFO(get_logger(), "Goal published; MCU will be driven by move frames");
 }
 
 void UartToMcuNode::goal_reached_callback(const std_msgs::msg::Bool::SharedPtr msg)
@@ -150,29 +146,23 @@ void UartToMcuNode::goal_reached_callback(const std_msgs::msg::Bool::SharedPtr m
 		return;
 	}
 
-	// 结束包:停止行驶,左右轮速填 0。
-	if (!write_packet(build_packet(kEndPacketId, 0, 0))) {
-		RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Failed writing end packet to serial");
+	// 结束:下发一帧 (0,0) 停车。
+	if (!write_packet(build_packet(0, 0))) {
+		RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Failed writing stop frame to serial");
 		return;
 	}
-	RCLCPP_INFO(get_logger(), "Sent end packet (id=0x%02X)", kEndPacketId);
+	RCLCPP_INFO(get_logger(), "Sent stop frame (0,0)");
 }
 
-std::vector<uint8_t> UartToMcuNode::build_packet(
-	uint16_t uart_id, int32_t speed_left, int32_t speed_right) const
+std::vector<uint8_t> UartToMcuNode::build_packet(int32_t speed_left, int32_t speed_right) const
 {
 	std::vector<uint8_t> packet;
-	packet.reserve(2 + 2 + 4 + 4 + 2);
+	packet.reserve(1 + 4 + 4 + 1);
 
-	// 帧头 0x55AA:先 0x55 再 0xAA。
-	packet.push_back(0x55U);
-	packet.push_back(0xAAU);
-	append_u16_le(packet, uart_id);
+	packet.push_back(kFrameHead);       // 帧头 0x5A
 	append_i32_le(packet, speed_left);
 	append_i32_le(packet, speed_right);
-	// 帧尾 0xAA55:先 0xAA 再 0x55。
-	packet.push_back(0xAAU);
-	packet.push_back(0x55U);
+	packet.push_back(kFrameTail);       // 帧尾 0xA5
 
 	return packet;
 }
@@ -198,12 +188,6 @@ bool UartToMcuNode::write_packet(const std::vector<uint8_t> & packet)
 		total_written += static_cast<size_t>(written);
 	}
 	return true;
-}
-
-void UartToMcuNode::append_u16_le(std::vector<uint8_t> & out, uint16_t value)
-{
-	out.push_back(static_cast<uint8_t>(value & 0xFF));
-	out.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
 }
 
 void UartToMcuNode::append_i32_le(std::vector<uint8_t> & out, int32_t value)
