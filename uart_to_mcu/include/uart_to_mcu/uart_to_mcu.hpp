@@ -14,11 +14,16 @@ inline constexpr const char * kDefaultWheelSpeedsTopic = "/wheel_speeds";
 inline constexpr const char * kDefaultGoalReachedTopic = "/goal_reached";
 inline constexpr const char * kDefaultGoalPublishedTopic = "/goal_published";
 
-// 通过 ROS 话题接收循迹端的车速 / 结束事件,打包成统一格式经串口下发给下位机。
-// 帧格式(共 10 字节): 0x5A | speed_left(i32,LE) | speed_right(i32,LE) | 0xA5
-// 无包 ID:每一帧都是"设定左右轮速",(0,0) 即停车。
-inline constexpr uint8_t kFrameHead = 0x5AU;
-inline constexpr uint8_t kFrameTail = 0xA5U;
+// 数据包三种类型的 UART_ID(uint16):
+//   0x34 开始包 —— 启动小车(左右轮速填 0)
+//   0x37 行进包 —— 下发左右轮车速
+//   0x38 结束包 —— 停止行驶(左右轮速填 0)
+inline constexpr uint16_t kStartPacketId = 0x34U;
+inline constexpr uint16_t kMovePacketId = 0x37U;
+inline constexpr uint16_t kEndPacketId = 0x38U;
+
+// 通过 ROS 话题接收循迹端的启动 / 车速 / 结束事件,打包成统一格式经串口下发给下位机。
+// 帧格式(共 14 字节): 0x55 0xAA | UART_ID(u16,LE) | speed_left(i32,LE) | speed_right(i32,LE) | 0xAA 0x55
 class UartToMcuNode : public rclcpp::Node
 {
 public:
@@ -33,13 +38,14 @@ private:
 	bool open_serial();
 	void close_serial();
 
-	// 组装一帧数据包(帧头 + 左右轮速 + 帧尾)。
-	std::vector<uint8_t> build_packet(int32_t speed_left, int32_t speed_right) const;
+	// 组装一帧数据包(帧头 + ID + 左右轮速 + 帧尾)。
+	std::vector<uint8_t> build_packet(uint16_t uart_id, int32_t speed_left, int32_t speed_right) const;
 	bool write_packet(const std::vector<uint8_t> & packet);
 
 	// 将 /wheel_speeds 的一路 RPS 乘以缩放系数后钳到 int32 范围。
 	int32_t scale_to_i32(double rps) const;
 
+	static void append_u16_le(std::vector<uint8_t> & out, uint16_t value);
 	static void append_i32_le(std::vector<uint8_t> & out, int32_t value);
 
 	std::string wheel_speeds_topic_;
