@@ -32,6 +32,7 @@ PidControllerNode::PidControllerNode()
 	max_wheel_rps_ = declare_parameter<double>("max_wheel_rps", 6.0);
 	goal_tolerance_ = declare_parameter<double>("goal_tolerance", 0.08);
 	heading_gate_ = declare_parameter<double>("heading_gate", 0.6);
+	box_side_ = declare_parameter<double>("box_side", 0.7);
 
 	// ---- PID 增益 ----
 	const double lin_kp = declare_parameter<double>("linear_kp", 0.8);
@@ -48,20 +49,30 @@ PidControllerNode::PidControllerNode()
 	angular_pid_.set_output_limits(-max_angular_speed_, max_angular_speed_);
 	angular_pid_.set_integral_limits(-max_angular_speed_, max_angular_speed_);
 
-	// ---- 三个目的点 A / B / C(map 坐标系,单位米)----
-	const auto goal_a = declare_parameter<std::vector<double>>("goal_a", {2.0, 0.0});
-	const auto goal_b = declare_parameter<std::vector<double>>("goal_b", {2.0, 2.0});
-	const auto goal_c = declare_parameter<std::vector<double>>("goal_c", {0.0, 2.0});
-	const auto load_wp = [this](const std::vector<double> & v, const char * name) {
-		if (v.size() < 2) {
-			RCLCPP_WARN(get_logger(), "%s 需要 [x, y] 两个值,已回退到 (0,0)", name);
-			return Waypoint{0.0, 0.0};
+	// ---- 三条预置路线 A / B / C(map 坐标系,[x1,y1,x2,y2,...],单位米)----
+	// 前面各点为途经方框(边长 box_side)的中心,最后一个点为终点。
+	const auto route_a = declare_parameter<std::vector<double>>(
+		"route_a", {0.576, 0.026, 0.741, 0.637, 0.782, 0.950});
+	const auto route_b = declare_parameter<std::vector<double>>(
+		"route_b", {0.775, 0.018, 0.717, 0.927, 1.554, 0.867});
+	const auto route_c = declare_parameter<std::vector<double>>(
+		"route_c", {-0.074, 0.856, 0.853, 0.857, 1.728, 0.786, 2.538, 0.809});
+	const auto load_route = [this](const std::vector<double> & v, const char * name) {
+		std::vector<Waypoint> route;
+		if (v.size() < 2 || v.size() % 2 != 0) {
+			RCLCPP_WARN(get_logger(),
+				"%s 需要偶数个值([x1,y1,x2,y2,...]),已置空", name);
+			return route;
 		}
-		return Waypoint{v[0], v[1]};
+		route.reserve(v.size() / 2);
+		for (size_t i = 0; i + 1 < v.size(); i += 2) {
+			route.push_back(Waypoint{v[i], v[i + 1]});
+		}
+		return route;
 	};
-	waypoints_[0] = load_wp(goal_a, "goal_a");
-	waypoints_[1] = load_wp(goal_b, "goal_b");
-	waypoints_[2] = load_wp(goal_c, "goal_c");
+	routes_[0] = load_route(route_a, "route_a");
+	routes_[1] = load_route(route_b, "route_b");
+	routes_[2] = load_route(route_c, "route_c");
 
 	// ---- TF ----
 	tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
@@ -112,14 +123,20 @@ void PidControllerNode::mission_callback(const std_msgs::msg::String::SharedPtr 
 		return;
 	}
 
-	if (value < 1 || value > static_cast<int>(waypoints_.size())) {
-		RCLCPP_WARN(get_logger(), "指令 %d 超出目的点范围 (1~%zu)", value, waypoints_.size());
+	if (value < 1 || value > static_cast<int>(routes_.size())) {
+		RCLCPP_WARN(get_logger(), "指令 %d 超出路线范围 (1~%zu)", value, routes_.size());
 		return;
 	}
 
-	// 预置目的点等价于只有一个航点的航线,与 /car_route 共用执行链路。
-	const std::string label = std::string("目的点 ") + static_cast<char>('A' + value - 1);
-	start_route({waypoints_[static_cast<size_t>(value - 1)]}, label);
+	// 预置路线与 /car_route 共用执行链路:途经各方框中心,终点停车。
+	const auto & route = routes_[static_cast<size_t>(value - 1)];
+	if (route.empty()) {
+		RCLCPP_WARN(get_logger(), "路线 %c 未配置或配置非法,已忽略",
+			static_cast<char>('A' + value - 1));
+		return;
+	}
+	const std::string label = std::string("路线 ") + static_cast<char>('A' + value - 1);
+	start_route(route, label);
 }
 
 void PidControllerNode::route_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
@@ -227,8 +244,12 @@ void PidControllerNode::control_loop()
 	const double dy = goal.y - y;
 	const double distance = std::hypot(dx, dy);
 
-	if (distance <= goal_tolerance_) {
-		if (route_index_ + 1 < route_.size()) {
+	// 中间航点是 0.7m 方框的中心:进入方框范围(半边长)即算经过;终点用精确阈值。
+	const bool is_last = (route_index_ + 1 >= route_.size());
+	const double tolerance = is_last ? goal_tolerance_ : std::max(goal_tolerance_, box_side_ / 2.0);
+
+	if (distance <= tolerance) {
+		if (!is_last) {
 			// 中间航点:不停车、不发 /goal_reached,直接切下一个航点继续走。
 			++route_index_;
 			linear_pid_.reset();

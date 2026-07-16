@@ -32,7 +32,8 @@ enum class MissionState
 	kReached    // 已到达,保持停止直到下一条指令
 };
 
-// 通过 /car_mission_start 接收预置任务指令(0/1/2/3),或通过 /car_route 接收多段航点
+// 通过 /car_mission_start 接收预置路线指令(0 停车,1/2/3 -> 路线 A/B/C:途经若干
+// 方框中心后到达终点),或通过 /car_route 接收多段航点
 // 队列([x1,y1,x2,y2,...],米,map 系),基于 cartographer 位姿(map->base_link 的 TF)
 // 做「距离 + 航向」双 PID,输出左右轮转速到 /wheel_speeds,交给串口节点下发给下位机。
 // 航点队列:中间航点到达即切下一个(不停车、不发 /goal_reached),最后一个航点到达才
@@ -79,8 +80,9 @@ private:
 	double max_wheel_rps_{6.0};      // 单轮最大转速,转/秒
 	double goal_tolerance_{0.08};    // 到点距离阈值,米
 	double heading_gate_{0.6};       // 航向误差大于该值时原地转向,弧度
+	double box_side_{0.7};           // 途经方框边长,米;进入半边长范围即算经过该中间航点
 
-	std::array<Waypoint, 3> waypoints_{};  // 索引 0/1/2 -> A/B/C(预置目的点)
+	std::array<std::vector<Waypoint>, 3> routes_{};  // 索引 0/1/2 -> 预置路线 A/B/C
 
 	// ---- 控制器 ----
 	Pid linear_pid_;
