@@ -111,11 +111,16 @@ void PidControllerNode::mission_callback(const std_msgs::msg::String::SharedPtr 
 	}
 
 	int value = -1;
-	try {
-		value = std::stoi(cmd);
-	} catch (const std::exception &) {
-		RCLCPP_WARN(get_logger(), "收到无法解析的指令: '%s' (期望 0/1/2/3)", msg->data.c_str());
-		return;
+	if (cmd == "true") {
+		// 收到 'true' 即执行路线 A(等价于指令 1)。
+		value = 1;
+	} else {
+		try {
+			value = std::stoi(cmd);
+		} catch (const std::exception &) {
+			RCLCPP_WARN(get_logger(), "收到无法解析的指令: '%s' (期望 true 或 0/1/2/3)", msg->data.c_str());
+			return;
+		}
 	}
 
 	if (value == 0) {
