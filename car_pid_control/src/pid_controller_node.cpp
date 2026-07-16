@@ -56,7 +56,7 @@ PidControllerNode::PidControllerNode()
 	const auto route_b = declare_parameter<std::vector<double>>(
 		"route_b", {0.775, 0.018, 0.717, 0.927, 1.554, 0.867});
 	const auto route_c = declare_parameter<std::vector<double>>(
-		"route_c", {-0.074, 0.856, 0.853, 0.857, 1.728, 0.786, 2.538, 0.809});
+		"route_c", {0.110, 0.856, 0.853, 0.857, 1.728, 0.786, 2.538, 0.809});
 	const auto load_route = [this](const std::vector<double> & v, const char * name) {
 		std::vector<Waypoint> route;
 		if (v.size() < 2 || v.size() % 2 != 0) {
